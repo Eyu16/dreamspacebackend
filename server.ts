@@ -21,11 +21,36 @@ const HF_TOKEN = process.env.HF_TOKEN;
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
+// Style label mapping for better prompts
+const STYLE_LABELS: { [key: string]: string } = {
+  coastal_beachy: "Coastal Beachy",
+  mid_century_modern: "Mid Century Modern",
+  rustic_bohemian: "Rustic Bohemian",
+  scandinavian_minimalist: "Scandinavian Minimalist",
+  industrial_modern: "Industrial Modern",
+  farmhouse_chic: "Farmhouse Chic",
+  art_deco_glamour: "Art Deco Glamour",
+  mediterranean_villa: "Mediterranean Villa",
+  modern_luxury: "Modern Luxury",
+  japanese_zen: "Japanese Zen",
+  victorian_elegant: "Victorian Elegant",
+  tropical_modern: "Tropical Modern",
+};
+
+const ROOM_TYPE_LABELS: { [key: string]: string } = {
+  living_room: "Living Room",
+  bedroom: "Bedroom",
+  kitchen: "Kitchen",
+  dining_room: "Dining Room",
+  bathroom: "Bathroom",
+  office: "Office",
+};
+
 // POST route: Start Redesign
 app.post("/api/start-redesign", async (req: Request, res: Response) => {
   try {
-    // Read image (base64 string) and userPrompt from req.body
-    const { image, userPrompt } = req.body;
+    // Read image (base64 string), userPrompt, style, and roomType from req.body
+    const { image, userPrompt, style, roomType } = req.body;
 
     // Check if image is missing
     if (!image) {
@@ -34,10 +59,16 @@ app.post("/api/start-redesign", async (req: Request, res: Response) => {
       });
     }
 
+    // Get style and roomType with defaults
+    const selectedStyle = style || "modern_luxury";
+    const selectedRoomType = roomType || "living_room";
+    const styleLabel = STYLE_LABELS[selectedStyle] || "Modern Luxury";
+    const roomTypeLabel = ROOM_TYPE_LABELS[selectedRoomType] || "Living Room";
+
     // Use default prompt if userPrompt is missing or empty
     const finalUserPrompt =
       userPrompt?.trim() ||
-      "Redesign this room with a modern aesthetic while maintaining its structure.";
+      `Apply ${styleLabel} style to this ${roomTypeLabel}`;
 
     // STEP 1: Call Hugging Face API (with fallback if it fails)
     let aiAnalysis = "a room"; // Default fallback
@@ -98,28 +129,58 @@ app.post("/api/start-redesign", async (req: Request, res: Response) => {
     }
 
     // STEP 2: Create Enhanced Prompt
-    // If we have analysis, use it; otherwise just use the user prompt
-    const enhancedPrompt =
-      aiAnalysis !== "a room"
-        ? `A user wants to redesign their room. Their goal is: "${finalUserPrompt}". The room currently contains: "${aiAnalysis}". Generate a new image that fulfills the user's goal, organizing and restyling the room.`
-        : `A user wants to redesign their room according to the following request: "${finalUserPrompt}". Generate a new image that fulfills the user's goal, maintaining the room structure while applying the requested changes.`;
+    // Create a strong prompt combining style and roomType
+    let enhancedPrompt = `A ${styleLabel} ${roomTypeLabel}`;
 
-    // STEP 3: Call Replicate (ControlNet Depth Model)
-    // Use predictions.create() to create a prediction (async processing)
-    const prediction = await replicate.predictions.create({
-      model: "black-forest-labs/flux-depth-pro",
-      version:
-        "b67d5fc4baa734e9fb5f970e2d116f07f8967dc7b4168256f1c400eaf5cff014",
-      input: {
-        prompt: enhancedPrompt,
-        control_image: image,
-        controlnet_conditioning_scale: 1.0,
-        guidance: 7,
-      },
+    // If we have user prompt, incorporate it
+    if (finalUserPrompt && finalUserPrompt.trim()) {
+      enhancedPrompt = `${enhancedPrompt} ${finalUserPrompt}`;
+    } else {
+      // Default description based on style
+      enhancedPrompt = `${enhancedPrompt} with ${styleLabel.toLowerCase()} design elements`;
+    }
+
+    // If we have AI analysis, add context about the room
+    if (aiAnalysis !== "a room") {
+      enhancedPrompt = `${enhancedPrompt}. The room currently contains: ${aiAnalysis}`;
+    }
+
+    // Add structure preservation instruction
+    enhancedPrompt = `${enhancedPrompt}. Maintain the room's original structure and layout while applying the design changes.`;
+
+    // STEP 3: Call Replicate (Interior Design Model)
+    // Use replicate.run() which waits for completion and returns output directly
+    const output = await replicate.run(
+      "adirik/interior-design:76604baddc85b1b4616e1c6475eca080da339c8875bd4996705440484a6eac38",
+      {
+        input: {
+          image: image,
+          prompt: enhancedPrompt,
+        },
+      }
+    );
+
+    // Get the output URL - replicate.run() returns an object with url() method
+    let outputUrl: string;
+    if (
+      typeof output === "object" &&
+      output !== null &&
+      typeof (output as any).url === "function"
+    ) {
+      outputUrl = (output as any).url();
+    } else if (typeof output === "string") {
+      outputUrl = output;
+    } else {
+      // Fallback: convert to string or use the output as-is
+      outputUrl = String(output);
+    }
+
+    // Return the image URL directly (no polling needed)
+    res.status(201).json({
+      success: true,
+      output: outputUrl,
+      imageUrl: outputUrl,
     });
-
-    // Return the prediction object (client will poll for status)
-    res.status(201).json(prediction);
   } catch (error: any) {
     console.error("Error starting redesign:", error);
 
