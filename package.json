@@ -2,10 +2,12 @@
   "name": "dreamspace-backend",
   "version": "1.0.0",
   "description": "Backend server for AI interior design app",
-  "main": "server.ts",
+  "main": "dist/server.js",
   "scripts": {
     "dev": "ts-node-dev server.ts",
-    "start": "nodemon --exec ts-node server.ts"
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "start:dev": "ts-node server.ts"
   },
   "keywords": [],
   "author": "",

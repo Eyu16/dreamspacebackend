@@ -18,7 +18,12 @@ const HF_API_URL =
 const HF_TOKEN = process.env.HF_TOKEN;
 
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL || "*", // Allow all origins in development, set FRONTEND_URL in production
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: "10mb" }));
 
 // Style label mapping for better prompts
