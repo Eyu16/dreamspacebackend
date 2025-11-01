@@ -37,6 +37,32 @@ interface MulterRequest extends Omit<Request, "file"> {
   };
 }
 
+// Valid style options for interior-design-v2
+const VALID_STYLES = [
+  "coastal_beachy",
+  "mid_century_modern",
+  "rustic_bohemian",
+  "scandinavian_minimalist",
+  "industrial_modern",
+  "farmhouse_chic",
+  "art_deco_glamour",
+  "mediterranean_villa",
+  "modern_luxury",
+  "japanese_zen",
+  "victorian_elegant",
+  "tropical_modern",
+] as const;
+
+// Valid room types (common room types)
+const VALID_ROOM_TYPES = [
+  "living_room",
+  "bedroom",
+  "kitchen",
+  "dining_room",
+  "bathroom",
+  "office",
+] as const;
+
 // Middleware
 app.use(cors());
 app.use(morgan("dev"));
@@ -51,107 +77,54 @@ app.post(
     try {
       const file = req.file;
       const userPrompt = req.body.userPrompt;
+      const requestedStyle = req.body.style || "modern_luxury"; // Default style
+      const requestedRoomType = req.body.roomType || "living_room"; // Default room type
 
       // Validate inputs
-      if (!file || !userPrompt) {
+      if (!file) {
         return res.status(400).json({
-          error: "Both image file and userPrompt are required",
+          error: "Image file is required",
         });
       }
 
-      // Convert image buffer to base64
+      // Validate style
+      const isValidStyle = VALID_STYLES.includes(requestedStyle as any);
+      const style = isValidStyle ? requestedStyle : "modern_luxury"; // Default to valid style if invalid
+
+      if (!isValidStyle) {
+        console.warn(
+          `Invalid style "${requestedStyle}", defaulting to "modern_luxury"`
+        );
+      }
+
+      // Validate room_type (use as-is if valid, default if not)
+      const isValidRoomType = VALID_ROOM_TYPES.includes(
+        requestedRoomType as any
+      );
+      const roomType = isValidRoomType ? requestedRoomType : "living_room";
+
+      if (!isValidRoomType) {
+        console.warn(
+          `Invalid room_type "${requestedRoomType}", defaulting to "living_room"`
+        );
+      }
+
+      // Convert image buffer to base64 data URL
       const imageBase64 = `data:${file.mimetype};base64,${file.buffer.toString(
         "base64"
       )}`;
 
-      let aiAnalysis = "";
-
-      // STEP 1: Call Google Gemini Vision (with fallback if quota exceeded)
-      try {
-        // Try gemini-1.5-flash first, fallback to gemini-pro-vision if needed
-        let model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-        // Convert base64 data URL to format Gemini expects
-        const base64Data = imageBase64.split(",")[1]; // Remove data:image/jpeg;base64, prefix
-        const imagePart = {
-          inlineData: {
-            data: base64Data,
-            mimeType: file.mimetype,
-          },
-        };
-
-        const prompt =
-          "You are an expert interior design assistant. Analyze this image of a room. Respond ONLY with a brief, bulleted list of the key furniture, objects, and materials you see. Be concise.";
-
-        let result;
-        try {
-          result = await model.generateContent([prompt, imagePart]);
-        } catch (modelError: any) {
-          // If gemini-1.5-flash fails, try gemini-pro-vision
-          if (modelError?.status === 404) {
-            console.warn(
-              "gemini-1.5-flash not available, trying gemini-pro-vision"
-            );
-            model = genAI.getGenerativeModel({ model: "gemini-pro-vision" });
-            result = await model.generateContent([prompt, imagePart]);
-          } else {
-            throw modelError;
-          }
-        }
-
-        const response = await result.response;
-        aiAnalysis = response.text() || "No analysis available";
-      } catch (geminiError: any) {
-        // Handle Gemini quota/rate limit errors gracefully
-        if (
-          geminiError?.status === 429 ||
-          geminiError?.code === 429 ||
-          geminiError?.message?.includes("quota")
-        ) {
-          console.warn(
-            "Gemini quota exceeded or rate limited. Proceeding without AI analysis."
-          );
-          aiAnalysis = "Skipped AI analysis due to quota limits.";
-        } else {
-          console.error("Gemini Vision error:", geminiError);
-          // For other errors, also fallback to no analysis
-          aiAnalysis = "AI analysis unavailable.";
-        }
-      }
-
-      // STEP 2: Create Enhanced Prompt
-      let enhancedPrompt: string;
-      if (
-        aiAnalysis &&
-        !aiAnalysis.includes("Skipped") &&
-        !aiAnalysis.includes("unavailable")
-      ) {
-        enhancedPrompt = `
-A user wants to redesign their room. Their goal is: "${userPrompt}"
-
-Here is an analysis of the room's current contents:
-${aiAnalysis}
-
-Please generate a new image that fulfills the user's goal, organizing and restyling the analyzed contents.
-`;
-      } else {
-        // Fallback: use only user prompt if AI analysis failed
-        enhancedPrompt = `Redesign this room according to the following request: "${userPrompt}". Apply the requested changes while maintaining the overall room structure and layout.`;
-      }
-
-      // STEP 3: Call Replicate (ControlNet)
+      // STEP 1: Call Replicate (Interior Design V2)
       // Using replicate.run() which waits for completion and returns output directly
-      const output = await replicate.run(
-        "adirik/interior-design:76604baddc85b1b4616e1c6475eca080da339c8875bd4996705440484a6eac38",
-        {
-          input: {
-            image: imageBase64,
-            prompt: enhancedPrompt,
-          },
-        }
-      );
+      const output = await replicate.run("adirik/interior-design-v2", {
+        input: {
+          style: style,
+          room_type: roomType,
+          room_image: imageBase64, // Replicate accepts base64 data URLs
+        },
+      });
 
-      // Get the output URL - replicate.run() returns an object with url() method or a string
+      // Get the output URL - replicate.run() returns an object with url() method
       let outputUrl: string;
       if (
         typeof output === "object" &&
@@ -190,6 +163,14 @@ Please generate a new image that fulfills the user's goal, organizing and restyl
           error:
             "Replicate model not found. The model may have been removed or the version identifier is incorrect.",
           details: error.message || "Model not found on Replicate",
+        });
+      } else if (error?.status === 422 || error?.response?.status === 422) {
+        // Validation error from Replicate
+        res.status(422).json({
+          error: "Invalid input parameters",
+          details:
+            error.message ||
+            "Input validation failed. Please check style and room_type values.",
         });
       } else if (error?.status === 400 || error?.response?.status === 400) {
         res.status(400).json({
